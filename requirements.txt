@@ -1,4 +1,3 @@
-Flask
-Flask-Cors
-sqlite3
-bcrypt
+flask
+flask-cors
+requests
